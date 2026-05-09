@@ -810,6 +810,7 @@ html, body {
   padding: 0 8px;
   white-space: pre-wrap;
   word-break: break-all;
+  border-left: 2px solid var(--diff-removed-text);
 }
 
 .tl-diff-body .diff-added {
@@ -818,6 +819,35 @@ html, body {
   padding: 0 8px;
   white-space: pre-wrap;
   word-break: break-all;
+  border-left: 2px solid var(--diff-added-text);
+}
+
+.tl-diff-body .diff-unchanged {
+  color: var(--text-secondary);
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  opacity: 0.7;
+}
+
+.tl-diff-body .diff-omitted {
+  color: var(--text-secondary);
+  padding: 0 8px;
+  font-style: italic;
+  opacity: 0.5;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-char-removed {
+  background: rgba(248, 81, 73, 0.3);
+  text-decoration: line-through;
+  border-radius: 2px;
+}
+
+.diff-char-added {
+  background: rgba(63, 185, 80, 0.3);
+  font-weight: 600;
+  border-radius: 2px;
 }
 
 /* Markdown content in timeline */

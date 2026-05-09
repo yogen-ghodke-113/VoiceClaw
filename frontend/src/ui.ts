@@ -4,6 +4,7 @@
 
 import { marked } from "marked";
 import type { ClaudeToolUseEvent } from "./types";
+import { generateDiff } from "./diff-engine";
 
 // Configure marked for inline rendering
 marked.setOptions({ breaks: true });
@@ -450,19 +451,27 @@ export class UI {
     if (!visible) entry.style.display = "none";
 
     const label = oldStr === "" ? "new" : "modified";
-
-    const lineCount = (oldStr ? oldStr.split("\n").length : 0) + newStr.split("\n").length;
+    const diffLines = generateDiff(oldStr, newStr);
+    const lineCount = diffLines.length;
 
     let diffHtml = `<div class="tl-row"><span class="tl-time">${time}</span> <span class="tl-tag">File ${label}</span> <span class="tl-detail">${escapeHtml(filePath)}</span><button class="tl-diff-toggle">\u25B6 ${lineCount} lines</button></div>`;
     diffHtml += `<div class="tl-diff-body collapsed">`;
 
-    if (oldStr) {
-      for (const line of oldStr.split("\n")) {
-        diffHtml += `<div class="diff-removed">- ${escapeHtml(line)}</div>`;
+    for (const line of diffLines) {
+      const prefix = line.type === "added" ? "+" : line.type === "removed" ? "-" : " ";
+      const className = `diff-${line.type}`;
+      
+      let contentHtml = "";
+      if (line.parts) {
+        for (const part of line.parts) {
+          const partClass = part.type === "added" ? "diff-char-added" : part.type === "removed" ? "diff-char-removed" : "";
+          contentHtml += partClass ? `<span class="${partClass}">${escapeHtml(part.value)}</span>` : escapeHtml(part.value);
+        }
+      } else {
+        contentHtml = escapeHtml(line.content);
       }
-    }
-    for (const line of newStr.split("\n")) {
-      diffHtml += `<div class="diff-added">+ ${escapeHtml(line)}</div>`;
+
+      diffHtml += `<div class="${className}">${escapeHtml(prefix)} ${contentHtml}</div>`;
     }
     diffHtml += `</div>`;
 

@@ -5,7 +5,7 @@
  * session resumption, and context window compression.
  */
 
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, ThinkingLevel } from "@google/genai";
 import type { AudioManager } from "./audio-manager";
 import { functionDeclarations } from "./types";
 import type { ServerConfig, TokenResponse, SessionState } from "./types";
@@ -89,13 +89,13 @@ export class GeminiConnection {
             automaticActivityDetection: { disabled: true },
           },
           thinkingConfig: {
-            thinkingLevel: "high",
+            thinkingLevel: ThinkingLevel.HIGH,
             includeThoughts: true,
           },
           contextWindowCompression: {
-            triggerTokens: 104857,
+            triggerTokens: "104857",
             slidingWindow: {
-              targetTokens: 52428,
+              targetTokens: "52428",
             },
           },
           sessionResumption: {
@@ -344,3 +344,4 @@ export class GeminiConnection {
     }
   }
 }
+

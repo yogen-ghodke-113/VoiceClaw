@@ -6,7 +6,7 @@
  * main Gemini is waiting for a function response.
  */
 
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, ThinkingLevel } from "@google/genai";
 import type { AudioManager } from "./audio-manager";
 import type { ServerConfig, TokenResponse } from "./types";
 import { log } from "./debug-log";
@@ -64,11 +64,11 @@ export class NarrationConnection {
             automaticActivityDetection: { disabled: true },
           },
           thinkingConfig: {
-            thinkingLevel: "high",
+            thinkingLevel: ThinkingLevel.HIGH,
           },
           contextWindowCompression: {
-            triggerTokens: 104857,
-            slidingWindow: { targetTokens: 52428 },
+            triggerTokens: "104857",
+            slidingWindow: { targetTokens: "52428" },
           },
         },
         callbacks: {

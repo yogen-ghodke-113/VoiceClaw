@@ -73,7 +73,7 @@ export class WaveRenderer {
     const outputAnalyser = this.audioManager.getOutputAnalyser();
 
     if (inputAnalyser) {
-      inputAnalyser.getByteFrequencyData(this.inputDataArray);
+      inputAnalyser.getByteFrequencyData(this.inputDataArray as any);
       for (let i = 0; i < this.inputDataArray.length; i++) {
         inputEnergy += this.inputDataArray[i];
       }
@@ -81,7 +81,7 @@ export class WaveRenderer {
     }
 
     if (outputAnalyser) {
-      outputAnalyser.getByteFrequencyData(this.outputDataArray);
+      outputAnalyser.getByteFrequencyData(this.outputDataArray as any);
       for (let i = 0; i < this.outputDataArray.length; i++) {
         outputEnergy += this.outputDataArray[i];
       }

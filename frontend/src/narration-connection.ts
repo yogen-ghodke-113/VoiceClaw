@@ -19,6 +19,7 @@ export class NarrationConnection {
   private muted = false;
   private connected = false;
   private disconnecting = false;
+  private intentionallyClosed = false;
   private languageCode: string;
 
   // Batch events: collect for a short window, then send as one message
@@ -35,6 +36,7 @@ export class NarrationConnection {
 
   async connect(): Promise<void> {
     this.disconnecting = false;
+    this.intentionallyClosed = false;
     try {
       const [tokenRes, configRes] = await Promise.all([
         fetch("/api/token").then((r) => r.json()) as Promise<TokenResponse>,
@@ -64,12 +66,12 @@ export class NarrationConnection {
             automaticActivityDetection: { disabled: true },
           },
           thinkingConfig: {
-            thinkingLevel: "high",
+            thinkingLevel: "high" as any,
           },
           contextWindowCompression: {
             triggerTokens: 104857,
             slidingWindow: { targetTokens: 52428 },
-          },
+          } as any,
         },
         callbacks: {
           onopen: () => {
@@ -89,6 +91,12 @@ export class NarrationConnection {
           onclose: (event: any) => {
             log("NARRATION", "Disconnected", `code=${event?.code} reason=${event?.reason || "unknown"}`);
             this.connected = false;
+
+            if (this.intentionallyClosed) {
+              log("NARRATION", "Closed intentionally, skipping reconnect");
+              return;
+            }
+
             if (!this.disconnecting) {
               this.scheduleReconnect();
             }
@@ -223,6 +231,7 @@ export class NarrationConnection {
 
   async disconnect(): Promise<void> {
     this.disconnecting = true;
+    this.intentionallyClosed = true;
     this.muted = true;
     this.eventBuffer = [];
     if (this.flushTimer) {

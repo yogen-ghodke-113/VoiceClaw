@@ -28,6 +28,8 @@ export class GeminiConnection {
   private audioManager: AudioManager;
   private callbacks: GeminiCallbacks;
   private reconnecting = false;
+  private intentionallyClosed = false;
+  private isAlwaysOn = false;
 
   private languageCode: string;
 
@@ -38,6 +40,9 @@ export class GeminiConnection {
   }
 
   async connect(): Promise<void> {
+    this.intentionallyClosed = false;
+    this.reconnecting = false;
+
     try {
       // Fetch ephemeral token and config from backend
       const [tokenRes, configRes, sessionRes] = await Promise.all([
@@ -59,18 +64,31 @@ export class GeminiConnection {
       log("GEMINI", `Connecting model=${configRes.model} token_len=${tokenRes.token.length} prompt_len=${configRes.system_prompt.length} tools=${functionDeclarations.map(f => f.name).join(",")}`);
       log("GEMINI", `Tool declarations: ${JSON.stringify(functionDeclarations.map(f => ({ name: f.name, params: Object.keys((f.parametersJsonSchema as any)?.properties || {}) })))}`);
 
-      // Clear old listeners before re-registering (prevents duplicates on reconnect)
+      // Determine if we are in always-on mode
+      this.isAlwaysOn = this.audioManager.getMode() === "always-on";
+
+      // Wire up audio capture — in always-on mode audio flows continuously
+      // and Gemini uses AUTOMATIC activity detection (no manual VAD signals)
       this.audioManager.clearListeners();
+      this.audioManager.setOnCaptureStart(() => {
+        // In always-on: no-op, Gemini auto-detects speech via AAD
+        // In manual modes: tell Gemini user started talking
+        if (!this.isAlwaysOn) {
+          this.sendActivityStart();
+        }
+      });
+      this.audioManager.setOnCaptureEnd(() => {
+        if (!this.isAlwaysOn) {
+          this.sendActivityEnd();
+        }
+      });
+
       this.audioManager.setOnChunk((base64) => {
         this.sendAudio(base64);
       });
-      this.audioManager.setOnCaptureStart(() => {
-        this.sendActivityStart();
-      });
-      this.audioManager.setOnCaptureEnd(() => {
-        this.sendActivityEnd();
-      });
 
+
+      log("GEMINI", "Connection handshake started...");
       this.session = await ai.live.connect({
         model: configRes.model,
         config: {
@@ -85,21 +103,29 @@ export class GeminiConnection {
           },
           outputAudioTranscription: {},
           inputAudioTranscription: {},
-          realtimeInputConfig: {
-            automaticActivityDetection: { disabled: true },
-          },
-          thinkingConfig: {
-            thinkingLevel: "high",
-            includeThoughts: true,
-          },
-          contextWindowCompression: {
-            triggerTokens: 104857,
-            slidingWindow: {
-              targetTokens: 52428,
-            },
-          },
+          realtimeInputConfig: this.isAlwaysOn
+            ? {
+                // ALWAYS-ON: Gemini detecta silêncio automaticamente (AAD)
+                automaticActivityDetection: {
+                  // silenceDurationMs: ms de silêncio até fechar o turno e responder
+                  silenceDurationMs: 800,
+                  // HIGH = detecta fim de fala mais rapidamente (menos espera)
+                  endOfSpeechSensitivity: "END_SENSITIVITY_HIGH" as any,
+                  startOfSpeechSensitivity: "START_SENSITIVITY_HIGH" as any,
+                },
+              }
+            : {
+                // MANUAL modes (PTT/Toggle): desativa AAD, usa activityStart/End manuais
+                automaticActivityDetection: { disabled: true },
+              },
           sessionResumption: {
             ...(this.sessionHandle ? { handle: this.sessionHandle } : {}),
+          },
+          thinkingConfig: {
+            thinkingLevel: "high" as any,
+          },
+          contextWindowCompression: {
+            slidingWindow: {},
           },
         },
         callbacks: {
@@ -116,6 +142,13 @@ export class GeminiConnection {
           },
           onclose: (event: any) => {
             log("GEMINI", "Disconnected", `code=${event?.code} reason=${event?.reason || "unknown"} wasClean=${event?.wasClean}`);
+
+            // Don't reconnect if closed intentionally
+            if (this.intentionallyClosed) {
+              log("GEMINI", "Closed intentionally, skipping reconnect");
+              return;
+            }
+
             // Clear stale session handle on "session not found" to avoid reconnect loop
             if (event?.code === 1008) {
               this.sessionHandle = null;
@@ -240,28 +273,30 @@ export class GeminiConnection {
     try {
       const parts: any[] = [];
 
-      if (images) {
+      if (images && images.length > 0) {
         for (const img of images) {
           parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
         }
-        log("GEMINI", `Sending ${images.length} image(s)`);
-      }
-
-      if (text) {
-        parts.push({ text });
-      }
-
-      // 3.1 Flash Live doesn't support sendClientContent mid-conversation
-      if (text && !images?.length) {
-        this.session.sendRealtimeInput({ text });
-      } else {
-        // For images, sendClientContent is the only option
+        if (text) parts.push({ text });
+        
+        log("GEMINI", `Sending ${images.length} image(s) via sendClientContent`);
         this.session.sendClientContent({
           turns: [{ role: "user", parts }],
           turnComplete: true,
         });
+      } else if (text) {
+        // For pure text, sendRealtimeInput is more robust in Flash Live.
+        // In always-on mode, we do NOT wrap in activityStart/End because
+        // the SDK handles AAD automatically.
+        if (!this.isAlwaysOn) {
+          this.sendActivityStart();
+        }
+        this.session.sendRealtimeInput({ text });
+        if (!this.isAlwaysOn) {
+          this.sendActivityEnd();
+        }
+        log("GEMINI", `Sent text message via sendRealtimeInput: "${text}"`);
       }
-      log("GEMINI", `Sent message: "${text}" + ${images?.length || 0} images`);
     } catch (err) {
       log("GEMINI", `ERROR sending message: ${err}`);
     }
@@ -333,6 +368,7 @@ export class GeminiConnection {
   }
 
   async disconnect(): Promise<void> {
+    this.intentionallyClosed = true;
     this.reconnecting = true; // Prevent auto-reconnect
     if (this.session) {
       try {

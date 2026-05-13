@@ -59,6 +59,11 @@ export class UI {
   private recentProjectsEl: HTMLElement;
   private projectNameEl: HTMLElement;
 
+  // Skills Modal
+  private skillsBtn: HTMLElement;
+  private skillsModal: HTMLElement;
+  private closeSkillsBtn: HTMLElement;
+
   // Filter state
   private filters: Record<string, boolean> = {};
 
@@ -78,8 +83,43 @@ export class UI {
     this.browserHeader = document.getElementById("browser-header")!;
     this.recentProjectsEl = document.getElementById("recent-projects")!;
     this.projectNameEl = document.getElementById("project-name")!;
+    
+    // Canvas elements
+    this.canvasContent = document.getElementById("canvas-content")!;
+    
+    // Skills elements
+    this.skillsBtn = document.getElementById("skills-btn")!;
+    this.skillsModal = document.getElementById("skills-modal")!;
+    this.closeSkillsBtn = document.getElementById("close-skills-btn")!;
 
+    this.initSkillsModal();
     this.initFilters();
+  }
+
+  private initSkillsModal(): void {
+    if (this.skillsBtn && this.skillsModal && this.closeSkillsBtn) {
+      this.skillsBtn.addEventListener("click", () => {
+        this.skillsModal.style.display = "flex";
+      });
+      
+      this.closeSkillsBtn.addEventListener("click", () => {
+        this.skillsModal.style.display = "none";
+      });
+      
+      this.skillsModal.addEventListener("click", (e) => {
+        if (e.target === this.skillsModal) {
+          this.skillsModal.style.display = "none";
+        }
+      });
+    }
+  }
+
+  private canvasContent: HTMLElement;
+
+  updateLiveCanvas(html: string): void {
+    if (this.canvasContent) {
+      this.canvasContent.innerHTML = html;
+    }
   }
 
   private initFilters(): void {
@@ -422,6 +462,30 @@ export class UI {
 
   addClaudeText(text: string): void {
     this.appendTimeline("claude-text", "Claude", text, true);
+    
+    // Attempt to extract markdown blocks to render in Live Canvas
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/;
+    const match = text.match(codeBlockRegex);
+    if (match) {
+      const language = match[1];
+      const code = match[2];
+      
+      // Render to canvas
+      let canvasHtml = `<div class="canvas-header-lang">${language.toUpperCase()} Output</div>`;
+      
+      if (language.toLowerCase() === 'html' || language.toLowerCase() === 'svg') {
+         // Render the actual HTML/SVG if safe, but for now we just show it safely
+         // For a true "Live Canvas", rendering raw SVG/HTML is powerful. Let's do it safely or as text
+         canvasHtml += `<div class="canvas-render-box">${code}</div>`;
+      } else {
+         canvasHtml += `<pre><code>${escapeHtml(code)}</code></pre>`;
+      }
+      this.updateLiveCanvas(canvasHtml);
+    } else {
+      // Just put the rendered markdown in the canvas as a summary
+      const rendered = marked.parse(text) as string;
+      this.updateLiveCanvas(`<div class="canvas-md">${rendered}</div>`);
+    }
   }
 
   // Clear all transcript and timeline content
@@ -477,6 +541,20 @@ export class UI {
 
     this.timeline.appendChild(entry);
     this.timeline.scrollTop = this.timeline.scrollHeight;
+
+    // Send the diff to Live Canvas for visual focus
+    let canvasHtml = `<h4>File Modified: ${escapeHtml(filePath)}</h4>`;
+    canvasHtml += `<div class="canvas-diff">`;
+    if (oldStr) {
+      for (const line of oldStr.split("\n")) {
+        canvasHtml += `<div class="diff-removed">- ${escapeHtml(line)}</div>`;
+      }
+    }
+    for (const line of newStr.split("\n")) {
+      canvasHtml += `<div class="diff-added">+ ${escapeHtml(line)}</div>`;
+    }
+    canvasHtml += `</div>`;
+    this.updateLiveCanvas(canvasHtml);
   }
 
   // ── Clear ───────────────────────────────────────────────────

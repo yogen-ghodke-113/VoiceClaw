@@ -2,11 +2,11 @@
 
 from typing import AsyncGenerator
 
-from claude_runner import ClaudeRunner
+from gemini_agent import GeminiRunner
 
 
 class FunctionRouter:
-    def __init__(self, claude: ClaudeRunner):
+    def __init__(self, claude: GeminiRunner):
         self.claude = claude
 
     async def route(self, name: str, args: dict) -> AsyncGenerator[dict, None]:

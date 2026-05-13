@@ -6,13 +6,14 @@ import json
 import os
 from pathlib import Path
 
+import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from checkpoint import GitCheckpoint, SessionManager
-from claude_runner import ClaudeRunner
+from gemini_agent import GeminiRunner
 from context_bridge import ContextBridge
 from function_router import FunctionRouter
 from gemini_session import create_ephemeral_token
@@ -24,7 +25,7 @@ app = FastAPI(title="VoiceClaw")
 
 # Global state
 project_dir: str | None = None
-claude_runner: ClaudeRunner | None = None
+claude_runner: GeminiRunner | None = None
 function_router: FunctionRouter | None = None
 context_bridge = ContextBridge()
 session_manager: SessionManager | None = None
@@ -37,7 +38,7 @@ def set_project(path: str):
 
     project_dir = path
     session_manager = SessionManager(project_dir)
-    claude_runner = ClaudeRunner(project_dir)
+    claude_runner = GeminiRunner(project_dir)
     function_router = FunctionRouter(claude_runner)
     git_checkpoint = GitCheckpoint(project_dir)
 
@@ -126,7 +127,7 @@ async def get_config():
         system_prompt = prompt_path.read_text(encoding="utf-8")
     return {
         "system_prompt": system_prompt,
-        "model": "gemini-3.1-flash-live-preview",
+        "model": "gemini-2.5-flash-native-audio-latest",
     }
 
 
@@ -138,7 +139,7 @@ async def get_narration_config():
         system_prompt = prompt_path.read_text(encoding="utf-8")
     return {
         "system_prompt": system_prompt,
-        "model": "gemini-3.1-flash-live-preview",
+        "model": "gemini-2.5-flash-native-audio-latest",
     }
 
 
@@ -185,7 +186,7 @@ async def set_claude_config(request: Request):
     model = data.get("model", "").strip()
     effort = data.get("effort", "").strip()
 
-    valid_models = {"opus", "sonnet", "haiku"}
+    valid_models = {"gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"}
     valid_efforts = {"low", "medium", "high", "max"}
 
     if model and model in valid_models:
@@ -199,7 +200,7 @@ async def set_claude_config(request: Request):
 @app.get("/api/claude-config")
 async def get_claude_config():
     if not claude_runner:
-        return {"model": "opus", "effort": "medium"}
+        return {"model": "gemini-2.0-flash-exp", "effort": "medium"}
     return {"model": claude_runner.model, "effort": claude_runner.effort}
 
 
@@ -235,10 +236,9 @@ async def get_context():
 @app.post("/api/cancel")
 async def cancel_claude():
     """Kill any running Claude subprocess."""
-    if claude_runner and claude_runner.process:
+    if claude_runner:
         try:
-            claude_runner.process.kill()
-            claude_runner.process = None
+            await claude_runner.cancel()
             return {"ok": True, "message": "Claude operation cancelled"}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -314,8 +314,6 @@ if static_dir.exists():
 
 
 def main():
-    import uvicorn
-
     parser = argparse.ArgumentParser(description="VoiceClaw server")
     parser.add_argument(
         "--project",

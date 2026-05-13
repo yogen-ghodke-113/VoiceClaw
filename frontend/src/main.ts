@@ -26,6 +26,7 @@ let gemini: GeminiConnection | null = null;
 let narration: NarrationConnection | null = null;
 let backend: BackendConnection | null = null;
 let isConnected = false;
+let pendingImages: { mimeType: string; data: string }[] = [];
 
 // ── Project Picker ───────────────────────────────────────────
 
@@ -64,8 +65,15 @@ async function browseDir(path: string): Promise<void> {
 // ── Voice UI Init ────────────────────────────────────────────
 
 async function initVoiceUI(): Promise<void> {
-  audioManager = new AudioManager();
-  await audioManager.init();
+  // Ensure we don't have multiple instances running
+  if (gemini || narration || backend) {
+    teardownVoiceUI();
+  }
+
+  if (!audioManager) {
+    audioManager = new AudioManager();
+    await audioManager.init();
+  }
 
   const canvas = document.getElementById("wave-canvas") as HTMLCanvasElement;
   if (canvas) {
@@ -138,188 +146,6 @@ async function initVoiceUI(): Promise<void> {
   });
   backend.connect();
 
-  // Language selector — needed before connectGemini
-  const langSelect = document.getElementById("language-select") as HTMLSelectElement;
-
-  async function connectGemini(): Promise<void> {
-    gemini = new GeminiConnection(audioManager!, {
-      onTranscript: (role, text) => {
-        ui.addTranscript(role, text);
-      },
-      onTurnComplete: () => {
-        ui.endTranscript();
-      },
-      onInterrupted: () => {
-        ui.endTranscript();
-        ui.addStatus("User interrupted Gemini");
-      },
-      onThinking: (text) => {
-        ui.addGeminiThinking(text);
-      },
-      onFunctionCall: (id, name, args) => {
-        log("GEMINI", `function_call name=${name} id=${id} | ${JSON.stringify(args).slice(0, 150)}`);
-
-        // Log to Gemini tab
-        ui.addGeminiToolCall(name, args);
-
-        // End current transcript so Gemini's post-tool response starts a new turn
-        ui.endTranscript();
-
-        // Client-side tools — handled in browser, not sent to Claude
-        if (name === "open_url") {
-          const url = (args.url as string) || "";
-          log("BROWSER", `Opening URL: ${url}`);
-          window.open(url, "_blank");
-          const result = `Opened ${url} in a new browser tab.`;
-          gemini!.sendFunctionResponse(id, name, result);
-          ui.addGeminiToolResult(name, result, false);
-          return;
-        }
-
-        if (name === "rewind") {
-          const hash = (args.hash as string) || "";
-
-          if (!hash) {
-            // List checkpoints
-            fetch("/api/checkpoints")
-              .then((r) => r.json())
-              .then((data) => {
-                if (!data.checkpoints || data.checkpoints.length === 0) {
-                  gemini!.sendFunctionResponse(id, name, "No checkpoints available. No code changes have been made yet.");
-                } else {
-                  const list = data.checkpoints
-                    .map((c: any) => `${c.hash}: ${c.label} (${c.when})`)
-                    .join("\n");
-                  gemini!.sendFunctionResponse(id, name, `Available checkpoints (most recent first):\n${list}\n\nTo restore, call rewind with the hash of the checkpoint you want to go back to.`);
-                }
-                // Show checkpoints in timeline
-                if (data.checkpoints?.length > 0) {
-                  const display = data.checkpoints.map((c: any) => `${c.hash} — ${c.label} (${c.when})`).join("\n");
-                  ui.addStatus(`Checkpoints:\n${display}`);
-                }
-                ui.addGeminiToolResult(name, `Listed ${data.checkpoints?.length || 0} checkpoints`, false);
-              })
-              .catch((err) => {
-                gemini!.sendFunctionResponse(id, name, `Failed to list checkpoints: ${err}`);
-                ui.addGeminiToolResult(name, `Failed: ${err}`, true);
-              });
-          } else {
-            // Restore to checkpoint
-            log("REWIND", `Restoring to checkpoint ${hash}`);
-            fetch("/api/checkpoints/restore", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ hash }),
-            })
-              .then((r) => r.json())
-              .then((data) => {
-                if (data.ok) {
-                  const msg = `Code rewound to checkpoint ${hash}. A safety checkpoint was created before the rewind in case you want to undo the undo.`;
-                  gemini!.sendFunctionResponse(id, name, msg);
-                  ui.addGeminiToolResult(name, msg, false);
-                } else {
-                  gemini!.sendFunctionResponse(id, name, `Rewind failed: ${data.error}`);
-                  ui.addGeminiToolResult(name, `Failed: ${data.error}`, true);
-                }
-              })
-              .catch((err) => {
-                gemini!.sendFunctionResponse(id, name, `Rewind failed: ${err}`);
-                ui.addGeminiToolResult(name, `Failed: ${err}`, true);
-              });
-          }
-          return;
-        }
-
-        if (name === "set_claude_model") {
-          const model = (args.model as string) || "";
-          const effort = (args.effort as string) || "";
-
-          if (!model && !effort) {
-            // No params — return current config and available options
-            fetch("/api/claude-config")
-              .then((r) => r.json())
-              .then((data) => {
-                const msg = `Current config: model=${data.model}, effort=${data.effort}. Available models: opus (smartest, slowest), sonnet (balanced), haiku (fastest, cheapest). Available efforts: low, medium, high, max.`;
-                gemini!.sendFunctionResponse(id, name, msg);
-                ui.addGeminiToolResult(name, msg, false);
-              })
-              .catch((err) => {
-                gemini!.sendFunctionResponse(id, name, `Failed to get config: ${err}`);
-                ui.addGeminiToolResult(name, `Failed: ${err}`, true);
-              });
-          } else {
-            log("CONFIG", `Setting Claude model=${model} effort=${effort}`);
-            fetch("/api/claude-config", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ model, effort }),
-            })
-              .then((r) => r.json())
-              .then((data) => {
-                const msg = `Claude config updated: model=${data.model}, effort=${data.effort}`;
-                gemini!.sendFunctionResponse(id, name, msg);
-                ui.addGeminiToolResult(name, msg, false);
-              })
-              .catch((err) => {
-                gemini!.sendFunctionResponse(id, name, `Failed to update config: ${err}`);
-                ui.addGeminiToolResult(name, `Failed: ${err}`, true);
-              });
-          }
-          return;
-        }
-
-        if (name === "cancel_task") {
-          fetch("/api/cancel", { method: "POST" })
-            .then((r) => r.json())
-            .then((data) => {
-              const msg = data.message || "Operation cancelled";
-              gemini!.sendFunctionResponse(id, name, msg);
-              ui.addGeminiToolResult(name, msg, false);
-              ui.setClaudeWorking(false);
-              narration?.silence();
-              ui.addStatus("Claude operation cancelled");
-            })
-            .catch((err) => {
-              gemini!.sendFunctionResponse(id, name, `Cancel failed: ${err}`);
-              ui.addGeminiToolResult(name, `Failed: ${err}`, true);
-            });
-          return;
-        }
-
-        ui.setClaudeWorking(true);
-        ui.addStatus(`Claude working on ${name}...`);
-        // Unmute narration — main Gemini is now waiting for function response
-        narration?.unmute();
-        narration?.sendImmediate(`Claude is starting to work on: ${name}. Instruction: ${JSON.stringify(args).slice(0, 200)}`);
-        backend!.sendFunctionCall(id, name, args);
-      },
-      onConnected: () => {
-        ui.setConnected(true);
-        isConnected = true;
-        ui.addStatus("Jarvis connected");
-      },
-      onDisconnected: () => {
-        ui.setConnected(false);
-        isConnected = false;
-        ui.addStatus("Gemini disconnected");
-      },
-      onStateChange: (state) => {
-        ui.setGeminiState(state);
-      },
-    }, langSelect.value);
-
-    await gemini.connect();
-
-    // Start narration Gemini (separate session for live commentary)
-    narration = new NarrationConnection(audioManager!, (text) => {
-      ui.addTranscript("narrator", text);
-    }, langSelect.value, () => {
-      ui.endTranscript();
-    });
-    narration.silence(); // Start muted — unmute when Claude is working
-    await narration.connect();
-  }
-
   // Connect/Disconnect button
   ui.onConnectClick(async () => {
     // Prime popup permission during user gesture so open_url works later
@@ -337,34 +163,229 @@ async function initVoiceUI(): Promise<void> {
     await connectGemini();
   });
 
-  // New Chat button — clear Gemini context and reconnect fresh
-  document.getElementById("new-chat-btn")!.addEventListener("click", async () => {
-    if (gemini) {
-      gemini.clearSessionHandle();
-      await gemini.disconnect();
-    }
-    if (narration) {
-      await narration.disconnect();
-    }
-    audioManager?.stopCapture();
-    ui.setConnected(false);
-    isConnected = false;
-    // Clear stored session handle on backend
-    fetch("/api/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gemini_handle: null }),
-    }).catch(() => {});
-    ui.clearAll();
-    ui.addStatus("Context cleared — starting new session");
-    await connectGemini();
-  });
-
-  // Auto-connect on load
-  await connectGemini();
-
-  // Mode selector
+  // Mode selector — needed for initial state
   const modeSelect = document.getElementById("mode-select") as HTMLSelectElement;
+  audioManager.setMode(modeSelect.value as any);
+
+  // Auto-connect Gemini
+  await connectGemini();
+}
+
+async function connectGemini(): Promise<void> {
+  if (!audioManager) return;
+  const langSelect = document.getElementById("language-select") as HTMLSelectElement;
+
+  gemini = new GeminiConnection(audioManager, {
+    onTranscript: (role, text) => {
+      ui.addTranscript(role, text);
+    },
+    onTurnComplete: () => {
+      ui.endTranscript();
+    },
+    onInterrupted: () => {
+      ui.endTranscript();
+      ui.addStatus("User interrupted Gemini");
+    },
+    onThinking: (text) => {
+      ui.addGeminiThinking(text);
+    },
+    onFunctionCall: (id, name, args) => {
+      log("GEMINI", `function_call name=${name} id=${id} | ${JSON.stringify(args).slice(0, 150)}`);
+
+      // Log to Gemini tab
+      ui.addGeminiToolCall(name, args);
+
+      // End current transcript so Gemini's post-tool response starts a new turn
+      ui.endTranscript();
+
+      // Client-side tools — handled in browser, not sent to Claude
+      if (name === "open_url") {
+        const url = (args.url as string) || "";
+        log("BROWSER", `Opening URL: ${url}`);
+        window.open(url, "_blank");
+        const result = `Opened ${url} in a new browser tab.`;
+        gemini!.sendFunctionResponse(id, name, result);
+        ui.addGeminiToolResult(name, result, false);
+        return;
+      }
+
+      if (name === "rewind") {
+        const hash = (args.hash as string) || "";
+
+        if (!hash) {
+          // List checkpoints
+          fetch("/api/checkpoints")
+            .then((r) => r.json())
+            .then((data) => {
+              if (!data.checkpoints || data.checkpoints.length === 0) {
+                gemini!.sendFunctionResponse(id, name, "No checkpoints available. No code changes have been made yet.");
+              } else {
+                const list = data.checkpoints
+                  .map((c: any) => `${c.hash}: ${c.label} (${c.when})`)
+                  .join("\n");
+                gemini!.sendFunctionResponse(id, name, `Available checkpoints (most recent first):\n${list}\n\nTo restore, call rewind with the hash of the checkpoint you want to go back to.`);
+              }
+              // Show checkpoints in timeline
+              if (data.checkpoints?.length > 0) {
+                const display = data.checkpoints.map((c: any) => `${c.hash} — ${c.label} (${c.when})`).join("\n");
+                ui.addStatus(`Checkpoints:\n${display}`);
+              }
+              ui.addGeminiToolResult(name, `Listed ${data.checkpoints?.length || 0} checkpoints`, false);
+            })
+            .catch((err) => {
+              gemini!.sendFunctionResponse(id, name, `Failed to list checkpoints: ${err}`);
+              ui.addGeminiToolResult(name, `Failed: ${err}`, true);
+            });
+        } else {
+          // Restore to checkpoint
+          log("REWIND", `Restoring to checkpoint ${hash}`);
+          fetch("/api/checkpoints/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ hash }),
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.ok) {
+                const msg = `Code rewound to checkpoint ${hash}. A safety checkpoint was created before the rewind in case you want to undo the undo.`;
+                gemini!.sendFunctionResponse(id, name, msg);
+                ui.addGeminiToolResult(name, msg, false);
+              } else {
+                gemini!.sendFunctionResponse(id, name, `Rewind failed: ${data.error}`);
+                ui.addGeminiToolResult(name, `Failed: ${data.error}`, true);
+              }
+            })
+            .catch((err) => {
+              gemini!.sendFunctionResponse(id, name, `Rewind failed: ${err}`);
+              ui.addGeminiToolResult(name, `Failed: ${err}`, true);
+            });
+        }
+        return;
+      }
+
+      if (name === "set_claude_model") {
+        const model = (args.model as string) || "";
+        const effort = (args.effort as string) || "";
+
+        if (!model && !effort) {
+          // No params — return current config and available options
+          fetch("/api/claude-config")
+            .then((r) => r.json())
+            .then((data) => {
+              const msg = `Current config: model=${data.model}, effort=${data.effort}. Available models: opus (smartest, slowest), sonnet (balanced), haiku (fastest, cheapest). Available efforts: low, medium, high, max.`;
+              gemini!.sendFunctionResponse(id, name, msg);
+              ui.addGeminiToolResult(name, msg, false);
+            })
+            .catch((err) => {
+              gemini!.sendFunctionResponse(id, name, `Failed to get config: ${err}`);
+              ui.addGeminiToolResult(name, `Failed: ${err}`, true);
+            });
+        } else {
+          log("CONFIG", `Setting Claude model=${model} effort=${effort}`);
+          fetch("/api/claude-config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model, effort }),
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              const msg = `Claude config updated: model=${data.model}, effort=${data.effort}`;
+              gemini!.sendFunctionResponse(id, name, msg);
+              ui.addGeminiToolResult(name, msg, false);
+            })
+            .catch((err) => {
+              gemini!.sendFunctionResponse(id, name, `Failed to update config: ${err}`);
+              ui.addGeminiToolResult(name, `Failed: ${err}`, true);
+            });
+        }
+        return;
+      }
+
+      if (name === "cancel_task") {
+        fetch("/api/cancel", { method: "POST" })
+          .then((r) => r.json())
+          .then((data) => {
+            const msg = data.message || "Operation cancelled";
+            gemini!.sendFunctionResponse(id, name, msg);
+            ui.addGeminiToolResult(name, msg, false);
+            ui.setClaudeWorking(false);
+            narration?.silence();
+            ui.addStatus("Claude operation cancelled");
+          })
+          .catch((err) => {
+            gemini!.sendFunctionResponse(id, name, `Cancel failed: ${err}`);
+            ui.addGeminiToolResult(name, `Failed: ${err}`, true);
+          });
+        return;
+      }
+
+      ui.setClaudeWorking(true);
+      ui.addStatus(`Claude working on ${name}...`);
+      // Unmute narration — main Gemini is now waiting for function response
+      narration?.unmute();
+      narration?.sendImmediate(`Claude is starting to work on: ${name}. Instruction: ${JSON.stringify(args).slice(0, 200)}`);
+      backend!.sendFunctionCall(id, name, args);
+    },
+    onConnected: () => {
+      ui.setConnected(true);
+      isConnected = true;
+      ui.addStatus("Jarvis connected");
+    },
+    onDisconnected: () => {
+      ui.setConnected(false);
+      isConnected = false;
+      ui.addStatus("Gemini disconnected");
+    },
+    onStateChange: (state) => {
+      ui.setGeminiState(state);
+    },
+  }, langSelect?.value || "en-US");
+
+  await gemini.connect();
+
+  // DISABLED: NarrationConnection creates its own internal AudioContext via the
+  // Gemini SDK. On Windows, having 3+ AudioContexts (ours + Gemini main + Narration)
+  // causes "The AudioContext encountered an error from the audio device" crash.
+  // Pattern inspired by jarvis-tutorial: single audio stream, no competing contexts.
+  log("NARRATION", "Narration disabled for audio stability (single AudioContext pattern)");
+  narration = null;
+}
+
+
+function addImageAttachment(file: File): void {
+  const previewArea = document.getElementById("attachment-preview")!;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result as string;
+    const base64 = dataUrl.split(",")[1];
+    const mimeType = file.type || "image/png";
+    pendingImages.push({ mimeType, data: base64 });
+
+    const thumb = document.createElement("div");
+    thumb.className = "attachment-thumb";
+    const idx = pendingImages.length - 1;
+    thumb.innerHTML = `<img src=\"${dataUrl}\" /><button class=\"attachment-remove\" data-idx=\"${idx}\">\u00D7</button>`;
+    previewArea.appendChild(thumb);
+
+    thumb.querySelector(".attachment-remove")!.addEventListener("click", () => {
+      pendingImages.splice(idx, 1);
+      thumb.remove();
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── Static UI Listeners (Setup Once) ─────────────────────────
+
+function setupStaticUI(): void {
+  const modeSelect = document.getElementById("mode-select") as HTMLSelectElement;
+  const textInput = document.getElementById("text-input") as HTMLInputElement;
+  const attachBtn = document.getElementById("attach-btn")!;
+  const fileInput = document.getElementById("file-input") as HTMLInputElement;
+  const previewArea = document.getElementById("attachment-preview")!;
+  const micBtn = document.getElementById("mic-btn")!;
+  const newChatBtn = document.getElementById("new-chat-btn")!;
+
   modeSelect.addEventListener("change", () => {
     const mode = modeSelect.value as "push-to-talk" | "toggle" | "always-on";
     audioManager?.setMode(mode);
@@ -373,37 +394,9 @@ async function initVoiceUI(): Promise<void> {
       "toggle": "Tap Space to Talk",
       "always-on": "Listening...",
     };
-    document.getElementById("mic-hint")!.textContent = hints[mode];
+    const hintEl = document.getElementById("mic-hint");
+    if (hintEl) hintEl.textContent = hints[mode];
   });
-
-  // Text input + image attachments
-  const textInput = document.getElementById("text-input") as HTMLInputElement;
-  const attachBtn = document.getElementById("attach-btn")!;
-  const fileInput = document.getElementById("file-input") as HTMLInputElement;
-  const previewArea = document.getElementById("attachment-preview")!;
-  let pendingImages: { mimeType: string; data: string }[] = [];
-
-  function addImageAttachment(file: File): void {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(",")[1];
-      const mimeType = file.type || "image/png";
-      pendingImages.push({ mimeType, data: base64 });
-
-      const thumb = document.createElement("div");
-      thumb.className = "attachment-thumb";
-      const idx = pendingImages.length - 1;
-      thumb.innerHTML = `<img src="${dataUrl}" /><button class="attachment-remove" data-idx="${idx}">\u00D7</button>`;
-      previewArea.appendChild(thumb);
-
-      thumb.querySelector(".attachment-remove")!.addEventListener("click", () => {
-        pendingImages.splice(idx, 1);
-        thumb.remove();
-      });
-    };
-    reader.readAsDataURL(file);
-  }
 
   attachBtn.addEventListener("click", () => fileInput.click());
 
@@ -416,7 +409,6 @@ async function initVoiceUI(): Promise<void> {
     }
   });
 
-  // Paste support — Ctrl+V with image in clipboard
   textInput.addEventListener("paste", (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -443,10 +435,39 @@ async function initVoiceUI(): Promise<void> {
     }
   });
 
-  // Mic button — always toggles (spacebar handles push-to-talk)
-  const micBtn = document.getElementById("mic-btn")!;
-  micBtn.addEventListener("click", () => {
-    audioManager?.toggleCapture();
+  micBtn.addEventListener("click", async () => {
+    if (!audioManager) {
+      log("UI", "Audio manager not ready, initializing...");
+      audioManager = new AudioManager();
+      await audioManager.init();
+    }
+    try {
+      await audioManager.toggleCapture();
+    } catch (err) {
+      log("UI", "Error toggling capture: " + err);
+    }
+  });
+
+  newChatBtn.addEventListener("click", async () => {
+    if (gemini) {
+      gemini.clearSessionHandle();
+      await gemini.disconnect();
+    }
+    if (narration) {
+      await narration.disconnect();
+    }
+    audioManager?.stopCapture();
+    ui.setConnected(false);
+    isConnected = false;
+    // Clear stored session handle on backend
+    fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gemini_handle: null }),
+    }).catch(() => {});
+    ui.clearAll();
+    ui.addStatus("Context cleared — starting new session");
+    await connectGemini();
   });
 }
 
@@ -467,6 +488,11 @@ function teardownVoiceUI(): void {
 // ── Main Init ────────────────────────────────────────────────
 
 async function init() {
+  // AudioManager is NOT created here — it's lazy-initialized in initVoiceUI()
+  // to avoid competing for hardware resources before the user interacts.
+
+  setupStaticUI();
+
   // Wire up picker events
   ui.onOpenProject((path) => openProject(path));
   ui.onBrowseNative(async () => {
@@ -506,7 +532,7 @@ async function init() {
     browseDir("~");
   }
 
-  console.log("VoiceClaw initialized");
+  console.log("APP", "VoiceClaw v2.3 — StableTurn (VAD manual fix)");
 }
 
 init().catch(console.error);

@@ -39,7 +39,7 @@ def transcribe_audio_sync(
     lang_name = _language_name(language_code)
 
     response = client.models.generate_content(
-        model="gemini-3.1-flash-lite-preview",
+        model="gemini-2.0-flash-exp",
         contents=[
             {
                 "parts": [
